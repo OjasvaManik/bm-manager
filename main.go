@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -104,10 +105,25 @@ func main() {
 		}
 		handleDelete(bmPath, os.Args[2])
 	case "open":
-		if len(os.Args) < 3 {
-			log.Fatal("Usage: open <index|alias>")
+		args := os.Args[2:]
+		if len(args) < 1 {
+			log.Fatal("Usage: open <index|alias> [-b <browser>]")
 		}
-		handleOpen(bmPath, os.Args[2])
+		alias := ""
+		targetBrowser := browser
+
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-b" && i+1 < len(args) {
+				targetBrowser = args[i+1]
+				i++
+			} else if !strings.HasPrefix(args[i], "-") && alias == "" {
+				alias = args[i]
+			}
+		}
+		if alias == "" {
+			log.Fatal("Usage: open <index|alias> [-b <browser>]")
+		}
+		handleOpen(bmPath, targetBrowser, alias)
 	default:
 		handleList(bmPath)
 	}
@@ -126,24 +142,15 @@ func handleList(bmPath string) {
 		log.Fatalf("Error reading file bookmarks.json: %v", err)
 	}
 
-	if strings.TrimSpace(string(data)) == "" {
-		fmt.Println("Bookmarks is empty")
-		return
-	}
-
-	var bookmarks []Bookmark
-	err = json.Unmarshal(data, &bookmarks)
-	if err != nil {
-		log.Fatalf("Invalid bookmarks.json format. Fix the JSON. Details: %v", err)
-	}
+	bookmarks := loadBookmarks(data)
 	if len(bookmarks) == 0 {
 		fmt.Println("Bookmarks is empty")
 		return
 	}
+
 	for i, bm := range bookmarks {
 		fmt.Printf("%d. \033]8;;%s\033\\%s\033]8;;\033\\\n", i+1, bm.URL, bm.Name)
 
-		// URL (always first child)
 		if len(bm.Alias) == 0 {
 			fmt.Printf("   └── \033]8;;%s\033\\%s\033]8;;\033\\\n", bm.URL, bm.URL)
 		} else {
@@ -186,19 +193,11 @@ func handleAdd(bmPath string, args []string) {
 
 	var bookmarks []Bookmark
 	if strings.TrimSpace(string(data)) != "" {
-		if err := json.Unmarshal(data, &bookmarks); err != nil {
-			log.Fatalf("Invalid bookmarks.json format. Fix the JSON. Details: %v", err)
-		}
+		bookmarks = loadBookmarks(data)
 	}
 
 	bookmarks = append(bookmarks, Bookmark{Name: name, URL: url, Alias: aliases})
-	data, err = json.MarshalIndent(bookmarks, "", "  ")
-	if err != nil {
-		log.Fatalf("Error encoding bookmarks.json: %v", err)
-	}
-	if err := os.WriteFile(bmPath, data, 0600); err != nil {
-		log.Fatalf("Error writing bookmarks.json: %v", err)
-	}
+	saveBookmarks(bookmarks, bmPath)
 
 	fmt.Println("Successfully Bookmarked")
 }
@@ -217,10 +216,7 @@ func handleDelete(bmPath string, index string) {
 		fmt.Println("Bookmarks is empty, index doesn't exist")
 		return
 	}
-	var bookmarks []Bookmark
-	if err := json.Unmarshal(data, &bookmarks); err != nil {
-		log.Fatalf("Invalid bookmarks.json format. Fix the JSON. Details: %v", err)
-	}
+	bookmarks := loadBookmarks(data)
 
 	i, err := strconv.Atoi(index)
 	if err != nil {
@@ -232,21 +228,62 @@ func handleDelete(bmPath string, index string) {
 		log.Fatalf("Index out of bounds: %d", i)
 	}
 	bookmarks = append(bookmarks[:i], bookmarks[i+1:]...)
-	data, err = json.MarshalIndent(bookmarks, "", "  ")
-	if err != nil {
-		log.Fatalf("Error encoding bookmarks.json: %v", err)
-	}
-	if err := os.WriteFile(bmPath, data, 0600); err != nil {
-		log.Fatalf("Error writing bookmarks.json: %v", err)
-	}
+	saveBookmarks(bookmarks, bmPath)
 	fmt.Println("Successfully Deleted")
 }
 
-func handleOpen(bmPath string, arg string) {}
+func handleOpen(bmPath string, browser string, arg string) {
+	data, err := os.ReadFile(bmPath)
+	if err != nil {
+		log.Fatalf("Error reading file bookmarks.json: %v", err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		fmt.Println("Bookmarks is empty, index doesn't exist")
+	}
+	bookmarks := loadBookmarks(data)
+
+	if i, err := strconv.Atoi(arg); err == nil {
+		i--
+		if i < 0 || i >= len(bookmarks) {
+			log.Fatalf("Index out of bounds: %d", i+1)
+		}
+		openInBrowser(browser, bookmarks[i].URL, bookmarks[i].Name)
+		return
+	}
+
+	for _, bm := range bookmarks {
+		for _, alias := range bm.Alias {
+			if alias == arg {
+				openInBrowser(browser, bm.URL, bm.Name)
+				return
+			}
+		}
+	}
+
+	log.Fatalf("No bookmark found for: %s", arg)
+}
 
 func loadBookmarks(data []byte) (bookmarks []Bookmark) {
 	if err := json.Unmarshal(data, &bookmarks); err != nil {
 		log.Fatalf("Invalid bookmarks.json format. Fix the JSON. Details: %v", err)
 	}
 	return bookmarks
+}
+
+func saveBookmarks(bookmarks []Bookmark, bmPath string) {
+	data, err := json.MarshalIndent(bookmarks, "", "  ")
+	if err != nil {
+		log.Fatalf("Error encoding bookmarks.json: %v", err)
+	}
+	if err := os.WriteFile(bmPath, data, 0600); err != nil {
+		log.Fatalf("Error writing bookmarks.json: %v", err)
+	}
+}
+
+func openInBrowser(browser string, url string, name string) {
+	cmd := exec.Command(browser, url)
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("Error opening %s in browser: %v", name, err)
+	}
+	fmt.Printf("Opening %s in browser %s succeeded.\n", name, browser)
 }
