@@ -1,3 +1,7 @@
 # JetBrains IDE files
 .idea/
 *.iml
+
+bm
+bm-manager
+main
